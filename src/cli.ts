@@ -16,10 +16,27 @@ const args = process.argv.slice(2);
 const command = args[0];
 if (command === "start" || command === "stop" || command === "__serve") {
   try {
-    if (command === "start")
-      console.log(await startDashboard(parsePort(args.slice(1))));
-    else if (command === "stop") console.log(await stopDashboard());
-    else {
+    const rest = args.slice(1);
+    if (command === "start") {
+      if (rest.includes("--help")) {
+        if (rest.length !== 1)
+          throw new Error("start --help cannot be combined with other options");
+        console.log("Usage: codex-session-usage start [--port PORT]");
+      } else {
+        if (rest.length && (rest.length !== 2 || rest[0] !== "--port"))
+          throw new Error("Usage: codex-session-usage start [--port PORT]");
+        console.log(await startDashboard(parsePort(rest)));
+      }
+    } else if (command === "stop") {
+      if (rest.includes("--help")) {
+        if (rest.length !== 1)
+          throw new Error("stop --help cannot be combined with other options");
+        console.log("Usage: codex-session-usage stop");
+      } else {
+        if (rest.length) throw new Error("Usage: codex-session-usage stop");
+        console.log(await stopDashboard());
+      }
+    } else {
       const port = parsePort(args.slice(1));
       const tokenIndex = args.indexOf("--token");
       const token = tokenIndex >= 0 ? args[tokenIndex + 1] : undefined;
