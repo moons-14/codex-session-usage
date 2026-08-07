@@ -11,7 +11,7 @@ export type Tokens = Record<
   number
 >;
 export type Warning = { code: string; message: string };
-type Meta = {
+export type Meta = {
   home: string;
   file: string;
   sessionKey?: string;
@@ -23,6 +23,10 @@ type Meta = {
   isSubagent: boolean;
   lastActivity?: string;
   title?: string;
+  agentNickname?: string;
+  agentRole?: string;
+  agentPath?: string;
+  threadSource?: string;
 };
 export type Row = {
   file?: string;
@@ -32,6 +36,22 @@ export type Row = {
   lastActivity?: string;
   /** ccusage reports one cost for the whole rollout, not for each model. */
   costUSD?: number;
+  /** A rollout price can only be assigned to a model when it had one model. */
+  costAttributable?: boolean;
+};
+export type ThreadDetail = {
+  threadId?: string;
+  name: string;
+  nickname?: string;
+  role?: string;
+  path?: string;
+  source?: string;
+  isSubagent: boolean;
+  models: Record<string, Tokens>;
+  totals: Tokens;
+  costUSD: number;
+  modelCostsUSD: Record<string, number>;
+  unattributedCostUSD: number;
 };
 export type Session = {
   sessionId: string;
@@ -43,8 +63,10 @@ export type Session = {
   models: Record<string, Tokens>;
   totals: Tokens;
   costUSD: number;
+  modelCostsUSD: Record<string, number>;
+  unattributedCostUSD: number;
   warnings: Warning[];
-  details?: Array<{ threadId?: string; model: string; tokens: Tokens }>;
+  details?: ThreadDetail[];
 };
 const zero = (): Tokens => ({
   inputTokens: 0,
@@ -157,6 +179,18 @@ function metadata(
           title:
             titles.get(string(payload, "session_id", "sessionId") ?? "") ??
             titles.get(string(payload, "id", "thread_id", "threadId") ?? ""),
+          agentNickname:
+            string(payload, "agent_nickname", "agentNickname") ??
+            (spawn && string(spawn, "agent_nickname", "agentNickname")),
+          agentRole:
+            string(payload, "agent_role", "agentRole") ??
+            (spawn && string(spawn, "agent_role", "agentRole")),
+          agentPath:
+            string(payload, "agent_path", "agentPath") ??
+            (spawn && string(spawn, "agent_path", "agentPath")),
+          threadSource:
+            string(payload, "thread_source", "threadSource") ??
+            string(source ?? {}, "thread_source", "threadSource", "type"),
         };
       }
     }
@@ -284,6 +318,7 @@ export function normalizeRows(raw: unknown): Row[] {
           // ccusage gives this once per rollout.  Do not multiply it when its
           // token payload is split into multiple model rows.
           costUSD: index === 0 ? costUSD : undefined,
+          costAttributable: Object.keys(models).length === 1,
         });
     else
       out.push({
@@ -293,6 +328,7 @@ export function normalizeRows(raw: unknown): Row[] {
         tokens: tokens(row),
         lastActivity: string(row, "lastActivity", "last_activity"),
         costUSD,
+        costAttributable: true,
       });
   }
   return out;
@@ -379,6 +415,8 @@ export function group(
         models: {},
         totals: zero(),
         costUSD: 0,
+        modelCostsUSD: {},
+        unattributedCostUSD: 0,
         warnings: [],
         details: [],
       };
@@ -419,12 +457,44 @@ export function group(
     const model = (s.models[row.model] ??= zero());
     add(model, row.tokens);
     add(s.totals, row.tokens);
-    s.costUSD += row.costUSD ?? 0;
-    s.details!.push({
-      threadId: meta.threadId,
-      model: row.model,
-      tokens: row.tokens,
-    });
+    const cost = row.costUSD ?? 0;
+    s.costUSD += cost;
+    if (cost) {
+      if (row.costAttributable)
+        s.modelCostsUSD[row.model] = (s.modelCostsUSD[row.model] ?? 0) + cost;
+      else {
+        s.unattributedCostUSD += cost;
+      }
+    }
+    let detail = s.details!.find((d) => d.threadId === meta.threadId);
+    if (!detail) {
+      detail = {
+        threadId: meta.threadId,
+        name:
+          meta.agentNickname ??
+          (meta.isSubagent ? "Unnamed subagent" : s.title),
+        nickname: meta.agentNickname,
+        role: meta.agentRole,
+        path: meta.agentPath,
+        source: meta.threadSource,
+        isSubagent: meta.isSubagent,
+        models: {},
+        totals: zero(),
+        costUSD: 0,
+        modelCostsUSD: {},
+        unattributedCostUSD: 0,
+      };
+      s.details!.push(detail);
+    }
+    add((detail.models[row.model] ??= zero()), row.tokens);
+    add(detail.totals, row.tokens);
+    detail.costUSD += cost;
+    if (cost) {
+      if (row.costAttributable)
+        detail.modelCostsUSD[row.model] =
+          (detail.modelCostsUSD[row.model] ?? 0) + cost;
+      else detail.unattributedCostUSD += cost;
+    }
     if (
       !s.lastActivity ||
       (row.lastActivity && row.lastActivity > s.lastActivity)
@@ -435,7 +505,27 @@ export function group(
   // metadata-only historical session cannot reappear after filtering.
   for (const meta of metas) {
     const id = tree(meta);
-    if (grouped.has(`${meta.home}:${id}`)) ensure(meta);
+    const session = grouped.get(`${meta.home}:${id}`);
+    if (session) {
+      ensure(meta);
+      if (!session.details!.some((detail) => detail.threadId === meta.threadId))
+        session.details!.push({
+          threadId: meta.threadId,
+          name:
+            meta.agentNickname ??
+            (meta.isSubagent ? "Unnamed subagent" : session.title),
+          nickname: meta.agentNickname,
+          role: meta.agentRole,
+          path: meta.agentPath,
+          source: meta.threadSource,
+          isSubagent: meta.isSubagent,
+          models: {},
+          totals: zero(),
+          costUSD: 0,
+          modelCostsUSD: {},
+          unattributedCostUSD: 0,
+        });
+    }
   }
   for (const s of grouped.values())
     s.warnings = warnings.filter((w) =>
@@ -519,15 +609,17 @@ export function render(
       lines.push(short("Details", maxWidth));
       lines.push(
         responsiveTable(
-          s.details.map((d) => ({
-            THREAD: d.threadId ?? "unknown",
-            MODEL: d.model,
-            INPUT: n(d.tokens.inputTokens),
-            CACHE: n(d.tokens.cacheReadTokens),
-            OUTPUT: n(d.tokens.outputTokens),
-            REASONING: n(d.tokens.reasoningOutputTokens),
-            TOTAL: n(d.tokens.totalTokens),
-          })),
+          s.details.flatMap((d) =>
+            Object.entries(d.models).map(([model, tokens]) => ({
+              THREAD: d.threadId ?? "unknown",
+              MODEL: model,
+              INPUT: n(tokens.inputTokens),
+              CACHE: n(tokens.cacheReadTokens),
+              OUTPUT: n(tokens.outputTokens),
+              REASONING: n(tokens.reasoningOutputTokens),
+              TOTAL: n(tokens.totalTokens),
+            })),
+          ),
           maxWidth,
           true,
         ),

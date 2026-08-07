@@ -21,6 +21,38 @@ The cost is ccusage/LiteLLM's API-equivalent USD estimate. It is not a ChatGPT s
 
 Current logs group by `payload.session_id`. Legacy logs follow `parent_thread_id` only when metadata confirms a subagent; `forked_from_id` is never followed. Missing parents, cycles, malformed metadata/index entries, and unmatched ccusage rows are represented as warnings in JSON.
 
+## Local dashboard
+
+Start a localhost-only, live dashboard in the background (the default is port
+4242):
+
+```sh
+codex-session-usage start
+codex-session-usage start --port 4242
+codex-session-usage stop
+# or with Nix
+nix run . -- start --port 4242
+```
+
+`start` waits for the health check and prints the URL. It will reuse an already
+running dashboard on the same port, and refuses to replace one on a different
+port. The server is bound exclusively to `127.0.0.1`, serves no prompts or raw
+rollout contents, and refreshes a shared offline `ccusage` snapshot about every
+four seconds. The page includes totals, model/session token bars, search and
+sorting, and an accessible per-session detail dialog for the root and its
+subagents.
+
+The page uses ccusage's API-equivalent estimate, not a ChatGPT subscription
+charge or quota. A rollout containing exactly one model gets an exact model
+price. For a multi-model rollout, its price remains in the session/thread total
+but is explicitly shown as unallocated rather than guessed for a model.
+
+State and logs are user-scoped in `$XDG_RUNTIME_DIR` when available; otherwise
+they are in `${TMPDIR:-/tmp}/codex-session-usage-<uid>/` as `dashboard.json`
+and `dashboard.log`. If startup fails, inspect that log; `stop` verifies the
+daemon's private health token before signalling its saved PID and removes stale
+state safely.
+
 ## Nix
 
 ```sh

@@ -11,6 +11,7 @@ import {
   render,
   scanHomes,
 } from "../src/index.js";
+import { parsePort } from "../src/dashboard.js";
 
 const home = () => {
   const p = join(tmpdir(), `csu-${crypto.randomUUID()}`);
@@ -163,6 +164,39 @@ test("counts a rollout cost exactly once when ccusage expands its models", () =>
   expect(rows.map((entry) => entry.costUSD)).toEqual([1.25, undefined, 2.5]);
   const scan = scanHomes([h]);
   expect(group(rows, scan.metas, scan.warnings).sessions[0].costUSD).toBe(3.75);
+  const session = group(rows, scan.metas, scan.warnings).sessions[0];
+  expect(session.modelCostsUSD.three).toBe(2.5);
+  expect(session.unattributedCostUSD).toBe(1.25);
+});
+test("exposes current agent metadata in aggregated details", () => {
+  const h = home(),
+    file = join(h, "sessions", "agent.jsonl");
+  writeFileSync(
+    file,
+    meta({
+      session_id: "S",
+      id: "agent",
+      parent_thread_id: "root",
+      agent_nickname: "Scout",
+      agent_role: "explorer",
+      agent_path: "root/scout",
+      thread_source: "subagent",
+    }),
+  );
+  const scan = scanHomes([h]);
+  const detail = group(normalizeRows([row(file)]), scan.metas, scan.warnings)
+    .sessions[0].details?.[0];
+  expect(detail?.nickname).toBe("Scout");
+  expect(detail?.role).toBe("explorer");
+  expect(detail?.path).toBe("root/scout");
+  expect(detail?.isSubagent).toBe(true);
+});
+test("validates dashboard ports", () => {
+  expect(parsePort([])).toBe(4242);
+  expect(parsePort(["--port", "49152"])).toBe(49152);
+  expect(() => parsePort(["--port", "0"])).toThrow();
+  expect(() => parsePort(["--port", "abc"])).toThrow();
+  expect(() => parsePort(["--port"])).toThrow();
 });
 test("uses the last valid root title from session_index and ignores child titles", () => {
   const h = home(),
@@ -271,7 +305,7 @@ test("keeps a zero-usage root and gates JSON details", () => {
       .sessions[0];
   expect(session.rootThreadId).toBe("root");
   expect(jsonSessions([session], false)[0].details).toBeUndefined();
-  expect(jsonSessions([session], true)[0].details).toHaveLength(1);
+  expect(jsonSessions([session], true)[0].details).toHaveLength(2);
   const displayed = render([
     { ...session, title: "日本語のとても長いタイトル" },
   ]);
