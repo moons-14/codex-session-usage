@@ -6,16 +6,20 @@ Offline CLI that aggregates a Codex root thread and its descendant subagents by 
 
 ```sh
 bun install
-bun run src/cli.ts --json
+bun run src/cli.ts
 # or
 bun run start -- --session <session-id> --details
 ```
 
-`ccusage` **20.0.19 or newer** must be on `PATH`. The wrapper runs `ccusage codex session --json --offline --no-cost`, so no network request is made. `CODEX_HOME` can contain comma-separated homes; both `sessions` and `archived_sessions` are scanned, with active files preferred.
+`ccusage` **20.0.19 or newer** must be on `PATH`. The wrapper runs `ccusage codex session --json --offline`, so no network request is made. `CODEX_HOME` can contain comma-separated homes; both `sessions` and `archived_sessions` are scanned, with active files preferred.
 
 Options: `--json`, `--session ID`, `--since ISO-8601`, `--until ISO-8601`, and `--details`.
 
-Current logs group by `payload.session_id`. Legacy logs follow `parent_thread_id` only when metadata confirms a subagent; `forked_from_id` is never followed. Missing parents, cycles, malformed metadata, and unmatched ccusage rows are represented as warnings in JSON.
+Human output is one compact bordered table per root session: it shows the root title from `$CODEX_HOME/session_index.jsonl`, a shortened session ID, model token totals, and a session-level estimated cost. The title index is optional; its last valid record for an ID wins, and missing titles display as `Untitled`. `--json` retains the full ID and adds `title` and `costUSD`.
+
+The cost is ccusage/LiteLLM's API-equivalent USD estimate. It is not a ChatGPT subscription charge, quota, or invoice. ccusage's Codex adapter v20.0.19 exposes a cost only for an entire rollout, not for its individual models, so model rows intentionally show `—` and only the session total has a cost.
+
+Current logs group by `payload.session_id`. Legacy logs follow `parent_thread_id` only when metadata confirms a subagent; `forked_from_id` is never followed. Missing parents, cycles, malformed metadata/index entries, and unmatched ccusage rows are represented as warnings in JSON.
 
 ## Nix
 

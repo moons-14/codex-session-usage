@@ -22,22 +22,27 @@ type Meta = {
   parentId?: string;
   isSubagent: boolean;
   lastActivity?: string;
+  title?: string;
 };
-type Row = {
+export type Row = {
   file?: string;
   directory?: string;
   model: string;
   tokens: Tokens;
   lastActivity?: string;
+  /** ccusage reports one cost for the whole rollout, not for each model. */
+  costUSD?: number;
 };
 export type Session = {
   sessionId: string;
+  title: string;
   rootThreadId?: string;
   threadIds: string[];
   subagentCount: number;
   lastActivity?: string;
   models: Record<string, Tokens>;
   totals: Tokens;
+  costUSD: number;
   warnings: Warning[];
   details?: Array<{ threadId?: string; model: string; tokens: Tokens }>;
 };
@@ -106,6 +111,7 @@ function metadata(
   file: string,
   sessionRoot: string,
   active: boolean,
+  titles: Map<string, string>,
   warnings: Warning[],
 ): Meta | undefined {
   try {
@@ -148,6 +154,9 @@ function metadata(
             payload.parent_thread_id || payload.parentThreadId || spawn,
           ),
           lastActivity: string(payload, "last_activity", "lastActivity"),
+          title:
+            titles.get(string(payload, "session_id", "sessionId") ?? "") ??
+            titles.get(string(payload, "id", "thread_id", "threadId") ?? ""),
         };
       }
     }
@@ -162,6 +171,38 @@ function metadata(
     });
   }
 }
+function sessionTitles(home: string, warnings: Warning[]): Map<string, string> {
+  const titles = new Map<string, string>();
+  const file = join(home, "session_index.jsonl");
+  if (!existsSync(file)) return titles;
+  let contents: string;
+  try {
+    contents = readFileSync(file, "utf8");
+  } catch {
+    warnings.push({
+      code: "unreadable_session_index",
+      message: `Cannot read session index: ${file}`,
+    });
+    return titles;
+  }
+  for (const line of contents.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      const id = string(entry, "id");
+      const title = string(entry, "thread_name");
+      if (!id || !title) throw new Error("missing id or thread_name");
+      // The index is append-only; a later valid record is authoritative.
+      titles.set(id, title);
+    } catch {
+      warnings.push({
+        code: "malformed_session_index",
+        message: `Malformed session index entry: ${file}`,
+      });
+    }
+  }
+  return titles;
+}
 export function scanHomes(homes: string[]): {
   metas: Meta[];
   warnings: Warning[];
@@ -170,13 +211,21 @@ export function scanHomes(homes: string[]): {
     metas: Meta[] = [];
   for (const raw of homes) {
     const home = resolve(raw);
+    const titles = sessionTitles(home, warnings);
     const byPath = new Map<string, Meta>();
     for (const [dir, active] of [
       ["archived_sessions", false],
       ["sessions", true],
     ] as const)
       for (const file of filesAt(join(home, dir), warnings)) {
-        const m = metadata(home, file, join(home, dir), active, warnings);
+        const m = metadata(
+          home,
+          file,
+          join(home, dir),
+          active,
+          titles,
+          warnings,
+        );
         if (!m) continue;
         const relative = file.slice(join(home, dir).length);
         const old = byPath.get(relative);
@@ -223,14 +272,18 @@ export function normalizeRows(raw: unknown): Row[] {
     if (!item || typeof item !== "object") continue;
     const row = item as Record<string, unknown>;
     const models = row.models as Record<string, unknown> | undefined;
+    const costUSD = value(row, "costUSD", "costUsd", "cost_usd");
     if (models && !Array.isArray(models))
-      for (const [model, usage] of Object.entries(models))
+      for (const [index, [model, usage]] of Object.entries(models).entries())
         out.push({
           file: string(row, "sessionFile", "session_file", "file", "path"),
           directory: string(row, "directory", "dir"),
           model,
           tokens: tokens(usage as Record<string, unknown>),
           lastActivity: string(row, "lastActivity", "last_activity"),
+          // ccusage gives this once per rollout.  Do not multiply it when its
+          // token payload is split into multiple model rows.
+          costUSD: index === 0 ? costUSD : undefined,
         });
     else
       out.push({
@@ -239,6 +292,7 @@ export function normalizeRows(raw: unknown): Row[] {
         model: string(row, "model") ?? "unknown",
         tokens: tokens(row),
         lastActivity: string(row, "lastActivity", "last_activity"),
+        costUSD,
       });
   }
   return out;
@@ -318,11 +372,13 @@ export function group(
     if (!s) {
       s = {
         sessionId: id,
+        title: "Untitled",
         rootThreadId: undefined,
         threadIds: [],
         subagentCount: 0,
         models: {},
         totals: zero(),
+        costUSD: 0,
         warnings: [],
         details: [],
       };
@@ -332,7 +388,10 @@ export function group(
       s.threadIds.push(meta.threadId);
       if (meta.isSubagent) s.subagentCount++;
     }
-    if (!meta.isSubagent && meta.threadId) s.rootThreadId = meta.threadId;
+    if (!meta.isSubagent && meta.threadId) {
+      s.rootThreadId = meta.threadId;
+      if (meta.title) s.title = meta.title;
+    }
     return s;
   };
   for (const row of rows) {
@@ -360,6 +419,7 @@ export function group(
     const model = (s.models[row.model] ??= zero());
     add(model, row.tokens);
     add(s.totals, row.tokens);
+    s.costUSD += row.costUSD ?? 0;
     s.details!.push({
       threadId: meta.threadId,
       model: row.model,
@@ -400,6 +460,19 @@ export function assertCcusageVersion(version: string): void {
       `ccusage >= 20.0.19 is required (found ${version || "unknown"})`,
     );
 }
+export function ccusageArgs(range?: {
+  since?: string;
+  until?: string;
+}): string[] {
+  return [
+    "codex",
+    "session",
+    "--json",
+    "--offline",
+    ...(range?.since ? ["--since", range.since] : []),
+    ...(range?.until ? ["--until", range.until] : []),
+  ];
+}
 export function ccusageRows(
   command = "ccusage",
   range?: { since?: string; until?: string },
@@ -408,43 +481,132 @@ export function ccusageRows(
   if (version.error)
     throw new Error(`Cannot run ${command}: ${version.error.message}`);
   assertCcusageVersion(version.stdout + version.stderr);
-  const run = spawnSync(
-    command,
-    [
-      "codex",
-      "session",
-      "--json",
-      "--offline",
-      "--no-cost",
-      ...(range?.since ? ["--since", range.since] : []),
-      ...(range?.until ? ["--until", range.until] : []),
-    ],
-    { encoding: "utf8" },
-  );
+  const run = spawnSync(command, ccusageArgs(range), { encoding: "utf8" });
   if (run.status !== 0) throw new Error(run.stderr || "ccusage failed");
   return normalizeRows(JSON.parse(run.stdout));
 }
 export function render(sessions: Session[], details = false): string {
-  const head =
-    "SESSION\tTHREADS\tMODEL\tINPUT\tCACHE\tOUTPUT\tREASONING\tTOTAL";
   const n = (x: number) => x.toLocaleString("en-US");
-  const lines = [head];
+  const usd = (x: number) =>
+    x.toLocaleString("en-US", { style: "currency", currency: "USD" });
+  const lines: string[] = [];
   for (const s of sessions) {
-    for (const [model, t] of Object.entries(s.models))
-      lines.push(
-        `${s.sessionId}\t${s.threadIds.length}\t${model}\t${n(t.inputTokens)}\t${n(t.cacheReadTokens)}\t${n(t.outputTokens)}\t${n(t.reasoningOutputTokens)}\t${n(t.totalTokens)}`,
-      );
+    const shortId =
+      s.sessionId.length > 16 ? `${s.sessionId.slice(0, 12)}…` : s.sessionId;
+    lines.push(`${s.title}  (${shortId}, ${s.threadIds.length} threads)`);
+    const rows = Object.entries(s.models).map(([model, t]) => [
+      model,
+      n(t.inputTokens),
+      n(t.cacheReadTokens),
+      n(t.outputTokens),
+      n(t.reasoningOutputTokens),
+      n(t.totalTokens),
+      "—",
+    ]);
     const t = s.totals;
+    rows.push([
+      "TOTAL",
+      n(t.inputTokens),
+      n(t.cacheReadTokens),
+      n(t.outputTokens),
+      n(t.reasoningOutputTokens),
+      n(t.totalTokens),
+      usd(s.costUSD),
+    ]);
     lines.push(
-      `${s.sessionId}\t${s.threadIds.length}\tTOTAL\t${n(t.inputTokens)}\t${n(t.cacheReadTokens)}\t${n(t.outputTokens)}\t${n(t.reasoningOutputTokens)}\t${n(t.totalTokens)}`,
+      table(
+        ["MODEL", "INPUT", "CACHE", "OUTPUT", "REASONING", "TOTAL", "COST"],
+        rows,
+        [false, true, true, true, true, true, true],
+      ),
     );
-    if (details)
-      for (const d of s.details ?? [])
-        lines.push(
-          `  ${d.threadId ?? "unknown"}\t\t${d.model}\t${n(d.tokens.inputTokens)}\t${n(d.tokens.cacheReadTokens)}\t${n(d.tokens.outputTokens)}\t${n(d.tokens.reasoningOutputTokens)}\t${n(d.tokens.totalTokens)}`,
-        );
+    if (details && s.details?.length) {
+      lines.push("Details");
+      lines.push(
+        table(
+          ["THREAD", "MODEL", "INPUT", "CACHE", "OUTPUT", "REASONING", "TOTAL"],
+          s.details.map((d) => [
+            short(d.threadId ?? "unknown", 16),
+            d.model,
+            n(d.tokens.inputTokens),
+            n(d.tokens.cacheReadTokens),
+            n(d.tokens.outputTokens),
+            n(d.tokens.reasoningOutputTokens),
+            n(d.tokens.totalTokens),
+          ]),
+          [false, false, true, true, true, true, true],
+        ),
+      );
+    }
+    lines.push("");
+  }
+  if (sessions.length) {
+    lines.push(
+      `Estimated total cost: ${usd(sessions.reduce((sum, s) => sum + s.costUSD, 0))}`,
+    );
   }
   return lines.join("\n");
+}
+
+function wide(char: string): boolean {
+  const code = char.codePointAt(0) ?? 0;
+  return (
+    code >= 0x1100 &&
+    (code <= 0x115f ||
+      code === 0x2329 ||
+      code === 0x232a ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe19) ||
+      (code >= 0xff01 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x1f300 && code <= 0x1faff))
+  );
+}
+function width(text: string): number {
+  return [...text].reduce((sum, char) => sum + (wide(char) ? 2 : 1), 0);
+}
+function short(text: string, max: number): string {
+  if (width(text) <= max) return text;
+  let result = "";
+  for (const char of text) {
+    if (width(result) + (wide(char) ? 2 : 1) > max - 1) break;
+    result += char;
+  }
+  return `${result}…`;
+}
+function table(headers: string[], rows: string[][], right: boolean[]): string {
+  const normalized = [headers, ...rows].map((row) =>
+    row.map((cell, index) => short(cell, index < 2 ? 24 : 14)),
+  );
+  const widths = headers.map((_, index) =>
+    Math.max(...normalized.map((row) => width(row[index]))),
+  );
+  const border = (left: string, middle: string, end: string, fill: string) =>
+    left + widths.map((size) => fill.repeat(size + 2)).join(middle) + end;
+  const line = (row: string[]) =>
+    "│" +
+    row
+      .map((cell, index) => {
+        const padding = " ".repeat(widths[index] - width(cell));
+        return right[index] ? ` ${padding}${cell} ` : ` ${cell}${padding} `;
+      })
+      .join("│") +
+    "│";
+  return [
+    border("┌", "┬", "┐", "─"),
+    line(normalized[0]),
+    border("├", "┼", "┤", "─"),
+    ...normalized
+      .slice(1)
+      .flatMap((row, index) =>
+        index === normalized.length - 2
+          ? [border("├", "┼", "┤", "─"), line(row)]
+          : [line(row)],
+      ),
+    border("└", "┴", "┘", "─"),
+  ].join("\n");
 }
 export function jsonSessions(sessions: Session[], details: boolean): Session[] {
   return sessions.map(({ details: rows, ...session }) =>

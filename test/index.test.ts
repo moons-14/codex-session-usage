@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   assertCcusageVersion,
+  ccusageArgs,
   group,
   jsonSessions,
   normalizeRows,
@@ -145,6 +146,53 @@ test("normalizes ccusage model fields and enforces minimum version", () => {
   });
   expect(() => assertCcusageVersion("ccusage 20.0.18")).toThrow();
   expect(() => assertCcusageVersion("20.0.19")).not.toThrow();
+  expect(ccusageArgs()).not.toContain("--no-cost");
+});
+test("counts a rollout cost exactly once when ccusage expands its models", () => {
+  const h = home(),
+    file = join(h, "sessions", "a.jsonl");
+  writeFileSync(file, meta({ session_id: "S", id: "root" }));
+  const rows = normalizeRows([
+    {
+      ...row(file),
+      costUSD: 1.25,
+      models: { one: row(file).models.gpt, two: row(file).models.gpt },
+    },
+    { ...row(file, "three"), costUSD: 2.5 },
+  ]);
+  expect(rows.map((entry) => entry.costUSD)).toEqual([1.25, undefined, 2.5]);
+  const scan = scanHomes([h]);
+  expect(group(rows, scan.metas, scan.warnings).sessions[0].costUSD).toBe(3.75);
+});
+test("uses the last valid root title from session_index and ignores child titles", () => {
+  const h = home(),
+    root = join(h, "sessions", "root.jsonl"),
+    child = join(h, "sessions", "child.jsonl");
+  writeFileSync(root, meta({ session_id: "S", id: "root" }));
+  writeFileSync(
+    child,
+    meta({ session_id: "S", id: "child", parent_thread_id: "root" }),
+  );
+  writeFileSync(
+    join(h, "session_index.jsonl"),
+    [
+      JSON.stringify({ id: "S", thread_name: "old" }),
+      "not json",
+      JSON.stringify({ id: "child", thread_name: "child title" }),
+      JSON.stringify({ id: "S", thread_name: "日本語の最終タイトル" }),
+    ].join("\n"),
+  );
+  const scan = scanHomes([h]);
+  const output = group(
+    normalizeRows([row(root), row(child)]),
+    scan.metas,
+    scan.warnings,
+  );
+  const session = output.sessions[0];
+  expect(session.title).toBe("日本語の最終タイトル");
+  expect(output.warnings.map((warning) => warning.code)).toContain(
+    "malformed_session_index",
+  );
 });
 test("matches ccusage relative directory and extensionless sessionFile", () => {
   const h = home();
@@ -224,7 +272,15 @@ test("keeps a zero-usage root and gates JSON details", () => {
   expect(session.rootThreadId).toBe("root");
   expect(jsonSessions([session], false)[0].details).toBeUndefined();
   expect(jsonSessions([session], true)[0].details).toHaveLength(1);
-  expect(render([session])).toContain("\tTOTAL\t");
+  const displayed = render([
+    { ...session, title: "日本語のとても長いタイトル" },
+  ]);
+  expect(displayed).toContain("┌");
+  expect(displayed).toContain("┘");
+  expect(displayed).toContain("日本語のとても長いタイトル");
+  expect(displayed).toContain("TOTAL");
+  expect(displayed).toContain("$0.00");
+  expect(displayed).not.toContain("\t");
 });
 test("does not emit metadata-only trees outside ccusage selection", () => {
   const h = home(),
