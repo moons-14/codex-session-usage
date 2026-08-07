@@ -11,7 +11,12 @@ import {
   render,
   scanHomes,
 } from "../src/index.js";
-import { parsePort, pidAlive, validState } from "../src/dashboard.js";
+import {
+  dashboardDocument,
+  parsePort,
+  pidAlive,
+  validState,
+} from "../src/dashboard.js";
 
 const home = () => {
   const p = join(tmpdir(), `csu-${crypto.randomUUID()}`);
@@ -197,6 +202,19 @@ test("validates dashboard ports", () => {
   expect(() => parsePort(["--port", "0"])).toThrow();
   expect(() => parsePort(["--port", "abc"])).toThrow();
   expect(() => parsePort(["--port"])).toThrow();
+});
+test("serves final dashboard markup without a template transform", () => {
+  const document = dashboardDocument();
+  for (const marker of [
+    "price unallocated",
+    "price unavailable",
+    "let ranked=[...data.sessions]",
+    "setAttribute('aria-label',z.title)",
+    "x.onclick=()=>open(s)",
+    "let legend=document.createElement('div')",
+  ])
+    expect(document).toContain(marker);
+  expect(document).not.toContain("dashboardHtml");
 });
 test("dashboard PID liveness does not treat this process as stale", () => {
   expect(pidAlive(process.pid)).toBe(true);
