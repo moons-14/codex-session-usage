@@ -11,7 +11,7 @@ import {
   render,
   scanHomes,
 } from "../src/index.js";
-import { parsePort, pidAlive } from "../src/dashboard.js";
+import { parsePort, pidAlive, validState } from "../src/dashboard.js";
 
 const home = () => {
   const p = join(tmpdir(), `csu-${crypto.randomUUID()}`);
@@ -201,6 +201,25 @@ test("validates dashboard ports", () => {
 test("dashboard PID liveness does not treat this process as stale", () => {
   expect(pidAlive(process.pid)).toBe(true);
   expect(pidAlive(999_999_999)).toBe(false);
+});
+test("rejects unsafe dashboard state before process operations", () => {
+  const good = {
+    pid: 12,
+    port: 4242,
+    token: "123e4567-e89b-42d3-a456-426614174000",
+    startedAt: "now",
+    log: "log",
+  };
+  expect(validState(good)).toBe(true);
+  for (const bad of [
+    { ...good, pid: 0 },
+    { ...good, pid: -1 },
+    { ...good, pid: Number.MAX_SAFE_INTEGER + 1 },
+    { ...good, port: 0 },
+    { ...good, port: 65536 },
+    { ...good, token: "nope" },
+  ])
+    expect(validState(bad)).toBe(false);
 });
 test("uses the last valid root title from session_index and ignores child titles", () => {
   const h = home(),

@@ -49,7 +49,7 @@ but is explicitly shown as unallocated rather than guessed for a model.
 
 State and logs are user-scoped in `$XDG_RUNTIME_DIR/codex-session-usage/` when
 available; otherwise they are in `${TMPDIR:-/tmp}/codex-session-usage-<uid>/`
-as `dashboard.json` and `dashboard.log`. The runtime directory must be private,
+as `dashboard.json` and an instance-specific `dashboard-<instance>.log`. The runtime directory must be private,
 non-symlinked, and owned by the current user. If startup fails, inspect that
 log; `stop` verifies the daemon's private health token before signalling its
 saved PID and removes stale state safely.

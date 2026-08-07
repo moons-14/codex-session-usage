@@ -5,6 +5,7 @@ import {
   openSync,
   closeSync,
   readFileSync,
+  realpathSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -21,7 +22,7 @@ import {
 
 const DEFAULT_PORT = 4242;
 const REFRESH_MS = 4_000;
-type State = {
+export type State = {
   pid: number;
   port: number;
   token: string;
@@ -47,10 +48,14 @@ function runtimeDir(): string {
   const candidate = process.env.XDG_RUNTIME_DIR;
   try {
     if (candidate && existsSync(candidate))
-      return safeRuntimeDirectory(join(candidate, "codex-session-usage"));
+      return safeRuntimeDirectory(
+        join(realpathSync(candidate), "codex-session-usage"),
+      );
   } catch {}
   const uid = typeof process.getuid === "function" ? process.getuid() : "user";
-  return safeRuntimeDirectory(join(tmpdir(), `codex-session-usage-${uid}`));
+  return safeRuntimeDirectory(
+    join(realpathSync(tmpdir()), `codex-session-usage-${uid}`),
+  );
 }
 function safeRuntimeDirectory(path: string): string {
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -70,19 +75,30 @@ function safeRuntimeDirectory(path: string): string {
 export function statePath() {
   return join(runtimeDir(), "dashboard.json");
 }
-export function logPath() {
-  return join(runtimeDir(), "dashboard.log");
+export function logPath(token: string) {
+  return join(runtimeDir(), `dashboard-${token}.log`);
 }
-function safeLog(path: string) {
-  try {
-    const stat = lstatSync(path);
-    if (stat.isSymbolicLink() || !stat.isFile())
-      throw new Error(`Refusing unsafe dashboard log path: ${path}`);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  const fd = openSync(path, "a", 0o600);
+function createLog(path: string) {
+  const fd = openSync(path, "wx", 0o600);
   closeSync(fd);
+}
+export function validState(raw: unknown): raw is State {
+  if (!raw || typeof raw !== "object") return false;
+  const state = raw as State;
+  return (
+    Number.isSafeInteger(state.pid) &&
+    state.pid > 0 &&
+    Number.isSafeInteger(state.port) &&
+    state.port >= 1 &&
+    state.port <= 65535 &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      state.token,
+    ) &&
+    typeof state.startedAt === "string" &&
+    state.startedAt.length > 0 &&
+    typeof state.log === "string" &&
+    state.log.length > 0
+  );
 }
 function readState(): State | undefined {
   const path = statePath();
@@ -90,11 +106,7 @@ function readState(): State | undefined {
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.isSymbolicLink()) return;
     const raw = JSON.parse(readFileSync(path, "utf8")) as State;
-    return Number.isInteger(raw.pid) &&
-      Number.isInteger(raw.port) &&
-      typeof raw.token === "string"
-      ? raw
-      : undefined;
+    return validState(raw) ? raw : undefined;
   } catch {
     return;
   }
@@ -206,8 +218,8 @@ export async function startDashboard(
   }
   ensureStateSafe();
   const token = crypto.randomUUID();
-  const log = logPath();
-  safeLog(log);
+  const log = logPath(token);
+  createLog(log);
   const output = Bun.file(log);
   const child = Bun.spawn(
     [
