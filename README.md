@@ -26,7 +26,7 @@ codex-session-usage --json
 nix run github:moons-14/codex-session-usage -- --json
 ```
 
-The flake supplies Bun, TypeScript tooling, and a ccusage v20.0.19 input. Its package is a thin launcher and works on Linux and Darwin.
+The flake supplies Bun, TypeScript tooling, and a ccusage v20.0.19 input. Its package is a thin launcher and supports x86_64/aarch64 Linux plus aarch64 Darwin.
 
 ## License and attribution
 
