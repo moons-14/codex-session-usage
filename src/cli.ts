@@ -16,7 +16,8 @@ try {
     .split(",")
     .filter(Boolean);
   const scanned = scanHomes(homes);
-  let sessions = group(ccusageRows(), scanned.metas, scanned.warnings).sessions;
+  const grouped = group(ccusageRows(), scanned.metas, scanned.warnings);
+  let sessions = grouped.sessions;
   const session = take("--session"),
     since = take("--since"),
     until = take("--until");
@@ -28,7 +29,7 @@ try {
   );
   console.log(
     args.includes("--json")
-      ? JSON.stringify({ sessions }, null, 2)
+      ? JSON.stringify({ sessions, warnings: grouped.warnings }, null, 2)
       : render(sessions, args.includes("--details")),
   );
 } catch (e) {

@@ -83,6 +83,43 @@ test("active rollout wins archived duplicate and invalid lineage warns", () => {
   expect(s.metas).toHaveLength(1);
   expect(s.metas[0].sessionId).toBe("active");
 });
+test("warns about malformed metadata and legacy parent cycles", () => {
+  const h = home(),
+    a = join(h, "sessions", "a.jsonl"),
+    b = join(h, "sessions", "b.jsonl"),
+    bad = join(h, "sessions", "bad.jsonl");
+  writeFileSync(
+    a,
+    meta({
+      id: "a",
+      source: { subagent: { thread_spawn: { parent_thread_id: "b" } } },
+    }),
+  );
+  writeFileSync(
+    b,
+    meta({
+      id: "b",
+      source: { subagent: { thread_spawn: { parent_thread_id: "a" } } },
+    }),
+  );
+  writeFileSync(bad, "not json\n");
+  const s = scanHomes([h]);
+  const out = group(normalizeRows([row(a), row(b)]), s.metas, s.warnings);
+  expect(out.warnings.map((w) => w.code)).toContain("malformed_metadata");
+  expect(out.warnings.map((w) => w.code)).toContain("parent_cycle");
+});
+test("keeps colliding sessions in separate CODEX_HOME identities", () => {
+  const one = home(),
+    two = home(),
+    a = join(one, "sessions", "a.jsonl"),
+    b = join(two, "sessions", "b.jsonl");
+  writeFileSync(a, meta({ session_id: "same", id: "a" }));
+  writeFileSync(b, meta({ session_id: "same", id: "b" }));
+  const s = scanHomes([one, two]);
+  expect(
+    group(normalizeRows([row(a), row(b)]), s.metas, s.warnings).sessions,
+  ).toHaveLength(2);
+});
 test("normalizes ccusage model fields and enforces minimum version", () => {
   const r = normalizeRows([
     {
