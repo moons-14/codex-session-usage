@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import {
   assertCcusageVersion,
   group,
+  jsonSessions,
   normalizeRows,
+  render,
   scanHomes,
 } from "../src/index.js";
 
@@ -143,4 +145,21 @@ test("normalizes ccusage model fields and enforces minimum version", () => {
   });
   expect(() => assertCcusageVersion("ccusage 20.0.18")).toThrow();
   expect(() => assertCcusageVersion("20.0.19")).not.toThrow();
+});
+test("keeps a zero-usage root and gates JSON details", () => {
+  const h = home(),
+    root = join(h, "sessions", "root.jsonl"),
+    child = join(h, "sessions", "child.jsonl");
+  writeFileSync(root, meta({ session_id: "S", id: "root" }));
+  writeFileSync(
+    child,
+    meta({ session_id: "S", id: "child", parent_thread_id: "root" }),
+  );
+  const scan = scanHomes([h]),
+    session = group(normalizeRows([row(child)]), scan.metas, scan.warnings)
+      .sessions[0];
+  expect(session.rootThreadId).toBe("root");
+  expect(jsonSessions([session], false)[0].details).toBeUndefined();
+  expect(jsonSessions([session], true)[0].details).toHaveLength(1);
+  expect(render([session])).toContain("\tTOTAL\t");
 });

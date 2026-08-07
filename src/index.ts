@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -56,12 +56,26 @@ const string = (o: Record<string, unknown>, ...keys: string[]) =>
   keys.map((k) => o[k]).find((v) => typeof v === "string") as
     string | undefined;
 
-function filesAt(root: string): string[] {
+function filesAt(root: string, warnings: Warning[]): string[] {
   if (!existsSync(root)) return [];
   const result: string[] = [];
   for (const e of readdirSync(root)) {
     const p = join(root, e);
-    if (statSync(p).isDirectory()) result.push(...filesAt(p));
+    let stat;
+    try {
+      stat = lstatSync(p);
+    } catch {
+      warnings.push({ code: "scan_error", message: `Cannot inspect: ${p}` });
+      continue;
+    }
+    if (stat.isSymbolicLink()) {
+      warnings.push({
+        code: "symlink_skipped",
+        message: `Skipped symlink: ${p}`,
+      });
+      continue;
+    }
+    if (stat.isDirectory()) result.push(...filesAt(p, warnings));
     else if (p.endsWith(".jsonl")) result.push(p);
   }
   return result;
@@ -137,7 +151,7 @@ export function scanHomes(homes: string[]): {
       ["archived_sessions", false],
       ["sessions", true],
     ] as const)
-      for (const file of filesAt(join(home, dir))) {
+      for (const file of filesAt(join(home, dir), warnings)) {
         const m = metadata(home, file, active, warnings);
         if (!m) continue;
         const relative = file.slice(join(home, dir).length);
@@ -258,6 +272,31 @@ export function group(
     return cur.threadId!;
   };
   const grouped = new Map<string, Session>();
+  const ensure = (meta: Meta) => {
+    const id = tree(meta),
+      key = `${meta.home}:${id}`;
+    let s = grouped.get(key);
+    if (!s) {
+      s = {
+        sessionId: id,
+        rootThreadId: undefined,
+        threadIds: [],
+        subagentCount: 0,
+        models: {},
+        totals: zero(),
+        warnings: [],
+        details: [],
+      };
+      grouped.set(key, s);
+    }
+    if (meta.threadId && !s.threadIds.includes(meta.threadId)) {
+      s.threadIds.push(meta.threadId);
+      if (meta.isSubagent) s.subagentCount++;
+    }
+    if (!meta.isSubagent && meta.threadId) s.rootThreadId = meta.threadId;
+    return s;
+  };
+  for (const meta of metas) ensure(meta);
   for (const row of rows) {
     const meta = metas.find((m) => samePath(row, m));
     if (!meta) {
@@ -267,25 +306,7 @@ export function group(
       });
       continue;
     }
-    const id = tree(meta);
-    let s = grouped.get(`${meta.home}:${id}`);
-    if (!s) {
-      s = {
-        sessionId: id,
-        rootThreadId: meta.threadId,
-        threadIds: [],
-        subagentCount: 0,
-        models: {},
-        totals: zero(),
-        warnings: [],
-        details: [],
-      };
-      grouped.set(`${meta.home}:${id}`, s);
-    }
-    if (meta.threadId && !s.threadIds.includes(meta.threadId)) {
-      s.threadIds.push(meta.threadId);
-      if (meta.isSubagent) s.subagentCount++;
-    }
+    const s = ensure(meta);
     const model = (s.models[row.model] ??= zero());
     add(model, row.tokens);
     add(s.totals, row.tokens);
@@ -323,14 +344,25 @@ export function assertCcusageVersion(version: string): void {
       `ccusage >= 20.0.19 is required (found ${version || "unknown"})`,
     );
 }
-export function ccusageRows(command = "ccusage"): Row[] {
+export function ccusageRows(
+  command = "ccusage",
+  range?: { since?: string; until?: string },
+): Row[] {
   const version = spawnSync(command, ["--version"], { encoding: "utf8" });
   if (version.error)
     throw new Error(`Cannot run ${command}: ${version.error.message}`);
   assertCcusageVersion(version.stdout + version.stderr);
   const run = spawnSync(
     command,
-    ["codex", "session", "--json", "--offline", "--no-cost"],
+    [
+      "codex",
+      "session",
+      "--json",
+      "--offline",
+      "--no-cost",
+      ...(range?.since ? ["--since", range.since] : []),
+      ...(range?.until ? ["--until", range.until] : []),
+    ],
     { encoding: "utf8" },
   );
   if (run.status !== 0) throw new Error(run.stderr || "ccusage failed");
@@ -341,16 +373,25 @@ export function render(sessions: Session[], details = false): string {
     "SESSION\tTHREADS\tMODEL\tINPUT\tCACHE\tOUTPUT\tREASONING\tTOTAL";
   const n = (x: number) => x.toLocaleString("en-US");
   const lines = [head];
-  for (const s of sessions)
+  for (const s of sessions) {
     for (const [model, t] of Object.entries(s.models))
       lines.push(
         `${s.sessionId}\t${s.threadIds.length}\t${model}\t${n(t.inputTokens)}\t${n(t.cacheReadTokens)}\t${n(t.outputTokens)}\t${n(t.reasoningOutputTokens)}\t${n(t.totalTokens)}`,
       );
-  if (details)
-    for (const s of sessions)
+    const t = s.totals;
+    lines.push(
+      `${s.sessionId}\t${s.threadIds.length}\tTOTAL\t${n(t.inputTokens)}\t${n(t.cacheReadTokens)}\t${n(t.outputTokens)}\t${n(t.reasoningOutputTokens)}\t${n(t.totalTokens)}`,
+    );
+    if (details)
       for (const d of s.details ?? [])
         lines.push(
           `  ${d.threadId ?? "unknown"}\t\t${d.model}\t${n(d.tokens.inputTokens)}\t${n(d.tokens.cacheReadTokens)}\t${n(d.tokens.outputTokens)}\t${n(d.tokens.reasoningOutputTokens)}\t${n(d.tokens.totalTokens)}`,
         );
+  }
   return lines.join("\n");
+}
+export function jsonSessions(sessions: Session[], details: boolean): Session[] {
+  return sessions.map(({ details: rows, ...session }) =>
+    details ? { ...session, details: rows } : session,
+  );
 }

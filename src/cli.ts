@@ -1,9 +1,27 @@
 #!/usr/bin/env bun
-import { ccusageRows, group, render, scanHomes } from "./index.js";
+import {
+  ccusageRows,
+  group,
+  jsonSessions,
+  render,
+  scanHomes,
+} from "./index.js";
 const args = process.argv.slice(2);
 const take = (name: string) => {
   const i = args.indexOf(name);
   return i < 0 ? undefined : args[i + 1];
+};
+const option = (name: string) => {
+  const value = take(name);
+  if (args.includes(name) && (!value || value.startsWith("--")))
+    throw new Error(`${name} requires a value`);
+  if (
+    value &&
+    name !== "--session" &&
+    !/^(\d{4}-\d{2}-\d{2}|\d{8})$/.test(value)
+  )
+    throw new Error(`${name} must be YYYY-MM-DD or YYYYMMDD`);
+  return value;
 };
 if (args.includes("--help")) {
   console.log(
@@ -15,23 +33,32 @@ try {
   const homes = (process.env.CODEX_HOME ?? `${process.env.HOME}/.codex`)
     .split(",")
     .filter(Boolean);
+  const session = option("--session"),
+    since = option("--since"),
+    until = option("--until");
   const scanned = scanHomes(homes);
-  const grouped = group(ccusageRows(), scanned.metas, scanned.warnings);
-  let sessions = grouped.sessions;
-  const session = take("--session"),
-    since = take("--since"),
-    until = take("--until");
-  sessions = sessions.filter(
-    (s) =>
-      (!session || s.sessionId === session) &&
-      (!since || (s.lastActivity ?? "") >= since) &&
-      (!until || (s.lastActivity ?? "") <= until),
+  const grouped = group(
+    ccusageRows("ccusage", { since, until }),
+    scanned.metas,
+    scanned.warnings,
   );
+  let sessions = grouped.sessions;
+  sessions = sessions.filter((s) => !session || s.sessionId === session);
   console.log(
     args.includes("--json")
-      ? JSON.stringify({ sessions, warnings: grouped.warnings }, null, 2)
+      ? JSON.stringify(
+          {
+            sessions: jsonSessions(sessions, args.includes("--details")),
+            warnings: grouped.warnings,
+          },
+          null,
+          2,
+        )
       : render(sessions, args.includes("--details")),
   );
+  if (!args.includes("--json"))
+    for (const warning of grouped.warnings)
+      console.error(`warning [${warning.code}]: ${warning.message}`);
 } catch (e) {
   console.error(e instanceof Error ? e.message : e);
   process.exit(1);
