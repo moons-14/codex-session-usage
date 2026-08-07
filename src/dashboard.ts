@@ -153,6 +153,25 @@ async function health(state: State): Promise<boolean> {
     return false;
   }
 }
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+export async function verifyState(
+  state: State,
+  attempts = 10,
+): Promise<"verified" | "alive-unverified" | "dead"> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (await health(state)) return "verified";
+    if (!pidAlive(state.pid)) return "dead";
+    await Bun.sleep(700);
+  }
+  return pidAlive(state.pid) ? "alive-unverified" : "dead";
+}
 async function terminate(child: Bun.Subprocess) {
   try {
     child.kill("SIGTERM");
@@ -170,14 +189,21 @@ export async function startDashboard(
   script = process.argv[1]!,
 ): Promise<string> {
   const previous = readState();
-  if (previous && (await health(previous))) {
-    if (previous.port !== port)
+  if (previous) {
+    const stateStatus = await verifyState(previous);
+    if (stateStatus === "verified") {
+      if (previous.port !== port)
+        throw new Error(
+          `Dashboard is already running at http://127.0.0.1:${previous.port}/ (stop it before using another port)`,
+        );
+      return `Dashboard already running: http://127.0.0.1:${port}/`;
+    }
+    if (stateStatus === "alive-unverified")
       throw new Error(
-        `Dashboard is already running at http://127.0.0.1:${previous.port}/ (stop it before using another port)`,
+        `Dashboard PID ${previous.pid} is alive but its health token could not be verified; state was retained.`,
       );
-    return `Dashboard already running: http://127.0.0.1:${port}/`;
+    clearState();
   }
-  clearState();
   ensureStateSafe();
   const token = crypto.randomUUID();
   const log = logPath();
@@ -231,10 +257,15 @@ export async function startDashboard(
 export async function stopDashboard(): Promise<string> {
   const state = readState();
   if (!state) return "Dashboard is not running.";
-  if (!(await health(state))) {
+  const stateStatus = await verifyState(state);
+  if (stateStatus === "dead") {
     clearState();
     return "Dashboard is not running (removed stale state).";
   }
+  if (stateStatus === "alive-unverified")
+    throw new Error(
+      `Dashboard PID ${state.pid} is alive but its health token could not be verified; state was retained.`,
+    );
   try {
     process.kill(state.pid, "SIGTERM");
   } catch {
@@ -243,9 +274,9 @@ export async function stopDashboard(): Promise<string> {
   }
   for (let attempt = 0; attempt < 50; attempt++) {
     await Bun.sleep(100);
-    if (!(await health(state))) break;
+    if (!pidAlive(state.pid)) break;
   }
-  if (await health(state))
+  if (pidAlive(state.pid))
     throw new Error(
       `Dashboard is still running at http://127.0.0.1:${state.port}/; state was retained.`,
     );
@@ -432,5 +463,13 @@ function dashboardHtml(html: string): string {
     .replace(
       "b.append(z)});x.append(l,b);return x}));let list",
       "b.append(z)});let legend=document.createElement('div');legend.className='models';Object.entries(s.models).forEach(([m,t])=>{let p=document.createElement('span');p.className='pill';text(p,m+' · '+nf.format(t.totalTokens)+(s.modelCostsUSD[m]!==undefined?' · '+usd.format(s.modelCostsUSD[m]):' · price unallocated'));legend.append(p)});x.tabIndex=0;x.setAttribute('role','button');x.onclick=()=>open(s);x.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open(s)}};x.append(l,b,legend);return x}));let list",
+    )
+    .replaceAll(
+      "' price unallocated'",
+      "(s.unattributedCostUSD?' price unallocated':' price unavailable')",
+    )
+    .replaceAll(
+      "' · price unallocated'",
+      "(s.unattributedCostUSD?' · price unallocated':' · price unavailable')",
     );
 }

@@ -11,7 +11,7 @@ import {
   render,
   scanHomes,
 } from "../src/index.js";
-import { parsePort } from "../src/dashboard.js";
+import { parsePort, pidAlive } from "../src/dashboard.js";
 
 const home = () => {
   const p = join(tmpdir(), `csu-${crypto.randomUUID()}`);
@@ -197,6 +197,10 @@ test("validates dashboard ports", () => {
   expect(() => parsePort(["--port", "0"])).toThrow();
   expect(() => parsePort(["--port", "abc"])).toThrow();
   expect(() => parsePort(["--port"])).toThrow();
+});
+test("dashboard PID liveness does not treat this process as stale", () => {
+  expect(pidAlive(process.pid)).toBe(true);
+  expect(pidAlive(999_999_999)).toBe(false);
 });
 test("uses the last valid root title from session_index and ignores child titles", () => {
   const h = home(),
