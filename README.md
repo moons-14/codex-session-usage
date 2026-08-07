@@ -15,9 +15,9 @@ bun run start -- --session <session-id> --details
 
 Options: `--json`, `--session ID`, `--since ISO-8601`, `--until ISO-8601`, and `--details`.
 
-Human output is one compact bordered table per root session: it shows the root title from `$CODEX_HOME/session_index.jsonl`, a shortened session ID, model token totals, and a session-level estimated cost. The title index is optional; its last valid record for an ID wins, and missing titles display as `Untitled`. `--json` retains the full ID and adds `title` and `costUSD`.
+Human output is one compact bordered table per root session: its sanitized header shows the root title from `$CODEX_HOME/session_index.jsonl`, a shortened session ID, and the session-level estimated cost. The title index is optional; its last valid record for an ID wins, and missing titles display as `Untitled`. The table responds to terminal width by omitting lower-priority `CACHE` and then `REASONING` columns when necessary; `--details` adapts the same way. `--json` retains the full, unsanitized title and ID and adds `title` and `costUSD`.
 
-The cost is ccusage/LiteLLM's API-equivalent USD estimate. It is not a ChatGPT subscription charge, quota, or invoice. ccusage's Codex adapter v20.0.19 exposes a cost only for an entire rollout, not for its individual models, so model rows intentionally show `—` and only the session total has a cost.
+The cost is ccusage/LiteLLM's API-equivalent USD estimate. It is not a ChatGPT subscription charge, quota, or invoice. ccusage's Codex adapter v20.0.19 exposes a cost only for an entire rollout, not for its individual models, so prices appear in the session header and overall summary rather than being invented for model rows.
 
 Current logs group by `payload.session_id`. Legacy logs follow `parent_thread_id` only when metadata confirms a subagent; `forked_from_id` is never followed. Missing parents, cycles, malformed metadata/index entries, and unmatched ccusage rows are represented as warnings in JSON.
 

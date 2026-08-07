@@ -485,56 +485,51 @@ export function ccusageRows(
   if (run.status !== 0) throw new Error(run.stderr || "ccusage failed");
   return normalizeRows(JSON.parse(run.stdout));
 }
-export function render(sessions: Session[], details = false): string {
+export function render(
+  sessions: Session[],
+  details = false,
+  terminalWidth = process.stdout.columns ?? 120,
+): string {
+  const maxWidth = Math.max(terminalWidth, 1);
   const n = (x: number) => x.toLocaleString("en-US");
   const usd = (x: number) =>
     x.toLocaleString("en-US", { style: "currency", currency: "USD" });
   const lines: string[] = [];
   for (const s of sessions) {
-    const shortId =
-      s.sessionId.length > 16 ? `${s.sessionId.slice(0, 12)}…` : s.sessionId;
-    lines.push(`${s.title}  (${shortId}, ${s.threadIds.length} threads)`);
-    const rows = Object.entries(s.models).map(([model, t]) => [
-      model,
-      n(t.inputTokens),
-      n(t.cacheReadTokens),
-      n(t.outputTokens),
-      n(t.reasoningOutputTokens),
-      n(t.totalTokens),
-      "—",
-    ]);
+    lines.push(sessionHeader(s, usd(s.costUSD), maxWidth));
+    const rows = Object.entries(s.models).map(([model, t]) => ({
+      MODEL: model,
+      INPUT: n(t.inputTokens),
+      CACHE: n(t.cacheReadTokens),
+      OUTPUT: n(t.outputTokens),
+      REASONING: n(t.reasoningOutputTokens),
+      TOTAL: n(t.totalTokens),
+    }));
     const t = s.totals;
-    rows.push([
-      "TOTAL",
-      n(t.inputTokens),
-      n(t.cacheReadTokens),
-      n(t.outputTokens),
-      n(t.reasoningOutputTokens),
-      n(t.totalTokens),
-      usd(s.costUSD),
-    ]);
-    lines.push(
-      table(
-        ["MODEL", "INPUT", "CACHE", "OUTPUT", "REASONING", "TOTAL", "COST"],
-        rows,
-        [false, true, true, true, true, true, true],
-      ),
-    );
+    rows.push({
+      MODEL: "TOTAL",
+      INPUT: n(t.inputTokens),
+      CACHE: n(t.cacheReadTokens),
+      OUTPUT: n(t.outputTokens),
+      REASONING: n(t.reasoningOutputTokens),
+      TOTAL: n(t.totalTokens),
+    });
+    lines.push(responsiveTable(rows, maxWidth));
     if (details && s.details?.length) {
-      lines.push("Details");
+      lines.push(short("Details", maxWidth));
       lines.push(
-        table(
-          ["THREAD", "MODEL", "INPUT", "CACHE", "OUTPUT", "REASONING", "TOTAL"],
-          s.details.map((d) => [
-            short(d.threadId ?? "unknown", 16),
-            d.model,
-            n(d.tokens.inputTokens),
-            n(d.tokens.cacheReadTokens),
-            n(d.tokens.outputTokens),
-            n(d.tokens.reasoningOutputTokens),
-            n(d.tokens.totalTokens),
-          ]),
-          [false, false, true, true, true, true, true],
+        responsiveTable(
+          s.details.map((d) => ({
+            THREAD: d.threadId ?? "unknown",
+            MODEL: d.model,
+            INPUT: n(d.tokens.inputTokens),
+            CACHE: n(d.tokens.cacheReadTokens),
+            OUTPUT: n(d.tokens.outputTokens),
+            REASONING: n(d.tokens.reasoningOutputTokens),
+            TOTAL: n(d.tokens.totalTokens),
+          })),
+          maxWidth,
+          true,
         ),
       );
     }
@@ -542,55 +537,113 @@ export function render(sessions: Session[], details = false): string {
   }
   if (sessions.length) {
     lines.push(
-      `Estimated total cost: ${usd(sessions.reduce((sum, s) => sum + s.costUSD, 0))}`,
+      short(
+        `Estimated total cost: ${usd(sessions.reduce((sum, s) => sum + s.costUSD, 0))}`,
+        maxWidth,
+      ),
     );
   }
   return lines.join("\n");
 }
+type DisplayRow = Record<string, string>;
+const columnOrder = [
+  "THREAD",
+  "MODEL",
+  "INPUT",
+  "CACHE",
+  "OUTPUT",
+  "REASONING",
+  "TOTAL",
+];
+const dropOrder = ["CACHE", "REASONING", "OUTPUT", "MODEL"];
+const numeric = new Set(["INPUT", "CACHE", "OUTPUT", "REASONING", "TOTAL"]);
 
-function wide(char: string): boolean {
-  const code = char.codePointAt(0) ?? 0;
-  return (
-    code >= 0x1100 &&
-    (code <= 0x115f ||
-      code === 0x2329 ||
-      code === 0x232a ||
-      (code >= 0x2e80 && code <= 0xa4cf) ||
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe10 && code <= 0xfe19) ||
-      (code >= 0xff01 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6) ||
-      (code >= 0x1f300 && code <= 0x1faff))
-  );
+function sessionHeader(s: Session, cost: string, maxWidth: number): string {
+  const id = short(safe(s.sessionId), 13);
+  const suffix = ` (${id}, ${s.threadIds.length} threads, ${cost})`;
+  if (Bun.stringWidth(suffix) >= maxWidth)
+    return short(`${safe(s.title)} ${cost}`, maxWidth);
+  return `${short(safe(s.title), maxWidth - Bun.stringWidth(suffix))}${suffix}`;
 }
-function width(text: string): number {
-  return [...text].reduce((sum, char) => sum + (wide(char) ? 2 : 1), 0);
+function safe(text: string): string {
+  return text
+    .replace(
+      /\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_][0-?]*[ -/]*[@-~])/g,
+      "",
+    )
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, "");
 }
 function short(text: string, max: number): string {
-  if (width(text) <= max) return text;
+  if (Bun.stringWidth(text) <= max) return text;
+  if (max <= 1) return "…".slice(0, max);
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   let result = "";
-  for (const char of text) {
-    if (width(result) + (wide(char) ? 2 : 1) > max - 1) break;
-    result += char;
+  for (const { segment } of segmenter.segment(text)) {
+    if (Bun.stringWidth(result + segment) > max - 1) break;
+    result += segment;
   }
   return `${result}…`;
 }
-function table(headers: string[], rows: string[][], right: boolean[]): string {
-  const normalized = [headers, ...rows].map((row) =>
-    row.map((cell, index) => short(cell, index < 2 ? 24 : 14)),
+function responsiveTable(
+  rows: DisplayRow[],
+  maxWidth: number,
+  details = false,
+): string {
+  const available = new Set(Object.keys(rows[0] ?? {}));
+  const columns = columnOrder.filter((column) => available.has(column));
+  for (const dropped of [undefined, ...dropOrder]) {
+    if (dropped) available.delete(dropped);
+    const selected = columns.filter((column) => available.has(column));
+    const output = table(selected, rows, details, maxWidth);
+    if (output) return output;
+  }
+  return rows
+    .map((row) =>
+      short(
+        Object.entries(row)
+          .map(([key, value]) => `${key.toLowerCase()}=${safe(value)}`)
+          .join(" "),
+        maxWidth,
+      ),
+    )
+    .join("\n");
+}
+function table(
+  headers: string[],
+  rows: DisplayRow[],
+  details: boolean,
+  maxWidth: number,
+): string | undefined {
+  if (!headers.length) return;
+  const normalized = [
+    headers,
+    ...rows.map((row) => headers.map((header) => safe(row[header] ?? ""))),
+  ].map((row) =>
+    row.map((cell, index) =>
+      short(
+        cell,
+        headers[index] === "THREAD" || headers[index] === "MODEL" ? 24 : 14,
+      ),
+    ),
   );
   const widths = headers.map((_, index) =>
-    Math.max(...normalized.map((row) => width(row[index]))),
+    Math.max(...normalized.map((row) => Bun.stringWidth(row[index]))),
   );
+  const lineWidth = widths.reduce(
+    (sum, size) => sum + size + 2,
+    headers.length + 1,
+  );
+  if (lineWidth > maxWidth) return;
   const border = (left: string, middle: string, end: string, fill: string) =>
     left + widths.map((size) => fill.repeat(size + 2)).join(middle) + end;
   const line = (row: string[]) =>
     "│" +
     row
       .map((cell, index) => {
-        const padding = " ".repeat(widths[index] - width(cell));
-        return right[index] ? ` ${padding}${cell} ` : ` ${cell}${padding} `;
+        const padding = " ".repeat(widths[index] - Bun.stringWidth(cell));
+        return numeric.has(headers[index])
+          ? ` ${padding}${cell} `
+          : ` ${cell}${padding} `;
       })
       .join("│") +
     "│";
@@ -601,7 +654,7 @@ function table(headers: string[], rows: string[][], right: boolean[]): string {
     ...normalized
       .slice(1)
       .flatMap((row, index) =>
-        index === normalized.length - 2
+        !details && index === normalized.length - 2
           ? [border("├", "┼", "┤", "─"), line(row)]
           : [line(row)],
       ),

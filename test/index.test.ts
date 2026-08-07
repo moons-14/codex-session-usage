@@ -282,6 +282,35 @@ test("keeps a zero-usage root and gates JSON details", () => {
   expect(displayed).toContain("$0.00");
   expect(displayed).not.toContain("\t");
 });
+test("renders sanitized grapheme-safe tables within narrow terminal widths", () => {
+  const h = home(),
+    root = join(h, "sessions", "root.jsonl"),
+    child = join(h, "sessions", "child.jsonl");
+  writeFileSync(root, meta({ session_id: "S", id: "root" }));
+  writeFileSync(
+    child,
+    meta({ session_id: "S", id: "child", parent_thread_id: "root" }),
+  );
+  const scan = scanHomes([h]);
+  const session = group(
+    normalizeRows([row(root, "gpt-5.6-sol", 12_345_678), row(child)]),
+    scan.metas,
+    scan.warnings,
+  ).sessions[0];
+  const family = "👨‍👩‍👧‍👦";
+  const rawTitle = `${family.repeat(10)} e\u0301\n\x1b[31mnot-red\x1b[0m`;
+  const titled = { ...session, title: rawTitle };
+  expect(jsonSessions([titled], false)[0].title).toBe(rawTitle);
+  for (const terminalWidth of [80, 50]) {
+    const displayed = render([titled], true, terminalWidth);
+    for (const line of displayed.split("\n"))
+      expect(Bun.stringWidth(line)).toBeLessThanOrEqual(terminalWidth);
+    expect(displayed).not.toContain("\x1b");
+    expect(displayed).not.toContain("not-red\n");
+    expect(displayed).toContain("e\u0301");
+    expect(displayed.replaceAll(family, "")).not.toContain("\u200d");
+  }
+});
 test("does not emit metadata-only trees outside ccusage selection", () => {
   const h = home(),
     a = join(h, "sessions", "a.jsonl"),
