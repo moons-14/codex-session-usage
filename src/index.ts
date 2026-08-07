@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export type Tokens = Record<
@@ -14,6 +14,8 @@ export type Warning = { code: string; message: string };
 type Meta = {
   home: string;
   file: string;
+  sessionKey?: string;
+  absoluteKey: string;
   active: boolean;
   sessionId?: string;
   threadId?: string;
@@ -56,6 +58,15 @@ const string = (o: Record<string, unknown>, ...keys: string[]) =>
   keys.map((k) => o[k]).find((v) => typeof v === "string") as
     string | undefined;
 
+const normalizePath = (path: string) => path.replaceAll("\\", "/");
+const withoutJsonl = (path: string) =>
+  path.endsWith(".jsonl") ? path.slice(0, -".jsonl".length) : path;
+const pathKey = (path: string) => withoutJsonl(normalizePath(path));
+const relativeKey = (file: string, root: string) => {
+  const key = pathKey(relative(root, file));
+  return key === ".." || key.startsWith("../") ? undefined : key;
+};
+
 function filesAt(root: string, warnings: Warning[]): string[] {
   if (!existsSync(root)) return [];
   const result: string[] = [];
@@ -93,6 +104,7 @@ function filesAt(root: string, warnings: Warning[]): string[] {
 function metadata(
   home: string,
   file: string,
+  sessionRoot: string,
   active: boolean,
   warnings: Warning[],
 ): Meta | undefined {
@@ -124,6 +136,8 @@ function metadata(
         return {
           home,
           file,
+          sessionKey: relativeKey(file, sessionRoot),
+          absoluteKey: pathKey(file),
           active,
           sessionId: string(payload, "session_id", "sessionId"),
           threadId: string(payload, "id", "thread_id", "threadId"),
@@ -162,7 +176,7 @@ export function scanHomes(homes: string[]): {
       ["sessions", true],
     ] as const)
       for (const file of filesAt(join(home, dir), warnings)) {
-        const m = metadata(home, file, active, warnings);
+        const m = metadata(home, file, join(home, dir), active, warnings);
         if (!m) continue;
         const relative = file.slice(join(home, dir).length);
         const old = byPath.get(relative);
@@ -229,13 +243,16 @@ export function normalizeRows(raw: unknown): Row[] {
   }
   return out;
 }
-function samePath(row: Row, meta: Meta): boolean {
-  const f = row.file && resolve(row.file);
-  return (
-    f === meta.file ||
-    (!!row.directory && meta.file.startsWith(resolve(row.directory) + "/")) ||
-    (!!row.file && meta.file.endsWith("/" + row.file))
-  );
+function rowPathKey(row: Row): { absolute: boolean; key: string } | undefined {
+  if (!row.file) return;
+  const file = normalizePath(row.file);
+  if (isAbsolute(file)) return { absolute: true, key: withoutJsonl(file) };
+  if (!row.directory) return { absolute: false, key: withoutJsonl(file) };
+  const directory = normalizePath(row.directory).replace(/\/+$/, "");
+  const key = `${directory}/${file.replace(/^\/+/, "")}`;
+  return isAbsolute(directory)
+    ? { absolute: true, key: withoutJsonl(key) }
+    : { absolute: false, key: withoutJsonl(key) };
 }
 export function group(
   rows: Row[],
@@ -248,6 +265,18 @@ export function group(
         .filter((m) => m.threadId)
         .map((m) => [`${m.home}:${m.threadId}`, m]),
     );
+  const byRelativePath = new Map<string, Meta[]>(),
+    byAbsolutePath = new Map<string, Meta[]>();
+  for (const meta of metas) {
+    if (meta.sessionKey) {
+      const matches = byRelativePath.get(meta.sessionKey) ?? [];
+      matches.push(meta);
+      byRelativePath.set(meta.sessionKey, matches);
+    }
+    const matches = byAbsolutePath.get(meta.absoluteKey) ?? [];
+    matches.push(meta);
+    byAbsolutePath.set(meta.absoluteKey, matches);
+  }
   const tree = (m: Meta): string => {
     if (m.sessionId) return m.sessionId;
     if (!m.threadId) {
@@ -307,14 +336,26 @@ export function group(
     return s;
   };
   for (const row of rows) {
-    const meta = metas.find((m) => samePath(row, m));
-    if (!meta) {
+    const rowKey = rowPathKey(row);
+    const matches = rowKey
+      ? ((rowKey.absolute ? byAbsolutePath : byRelativePath).get(rowKey.key) ??
+        [])
+      : [];
+    if (matches.length === 0) {
       warnings.push({
         code: "unmatched_row",
         message: `No metadata matches ccusage row ${row.file ?? row.directory ?? "unknown"}`,
       });
       continue;
     }
+    if (matches.length > 1) {
+      warnings.push({
+        code: "ambiguous_row",
+        message: `Multiple metadata files match ccusage row ${row.file ?? row.directory ?? "unknown"}`,
+      });
+      continue;
+    }
+    const [meta] = matches;
     const s = ensure(meta);
     const model = (s.models[row.model] ??= zero());
     add(model, row.tokens);

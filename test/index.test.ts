@@ -146,6 +146,69 @@ test("normalizes ccusage model fields and enforces minimum version", () => {
   expect(() => assertCcusageVersion("ccusage 20.0.18")).toThrow();
   expect(() => assertCcusageVersion("20.0.19")).not.toThrow();
 });
+test("matches ccusage relative directory and extensionless sessionFile", () => {
+  const h = home();
+  const file = join(
+    h,
+    "sessions",
+    "2026",
+    "08",
+    "08",
+    "rollout-2026-08-08T02-52-54-019fdd5b-4501-7a03-b0bb-24f2b2fd3780.jsonl",
+  );
+  mkdirSync(join(h, "sessions", "2026", "08", "08"), { recursive: true });
+  writeFileSync(file, meta({ session_id: "S", id: "root" }));
+  const scan = scanHomes([h]);
+  const out = group(
+    normalizeRows([
+      {
+        ...row(
+          "rollout-2026-08-08T02-52-54-019fdd5b-4501-7a03-b0bb-24f2b2fd3780",
+        ),
+        directory: "2026/08/08",
+      },
+    ]),
+    scan.metas,
+    scan.warnings,
+  );
+  expect(out.sessions).toHaveLength(1);
+  expect(out.sessions[0].sessionId).toBe("S");
+  expect(out.warnings.map((warning) => warning.code)).not.toContain(
+    "unmatched_row",
+  );
+});
+test("matches an absolute sessionFile without its final jsonl extension", () => {
+  const h = home(),
+    file = join(h, "sessions", "a.jsonl");
+  writeFileSync(file, meta({ session_id: "S", id: "root" }));
+  const scan = scanHomes([h]);
+  expect(
+    group(
+      normalizeRows([row(file.slice(0, -".jsonl".length))]),
+      scan.metas,
+      scan.warnings,
+    ).sessions,
+  ).toHaveLength(1);
+});
+test("does not attribute a relative ccusage row shared by multiple homes", () => {
+  const one = home(),
+    two = home();
+  for (const h of [one, two]) {
+    const dir = join(h, "sessions", "2026", "08", "08");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "same.jsonl"), meta({ session_id: h, id: "root" }));
+  }
+  const scan = scanHomes([one, two]);
+  const out = group(
+    normalizeRows([{ ...row("same"), directory: "2026/08/08" }]),
+    scan.metas,
+    scan.warnings,
+  );
+  expect(out.sessions).toHaveLength(0);
+  expect(out.warnings.map((warning) => warning.code)).toContain(
+    "ambiguous_row",
+  );
+});
 test("keeps a zero-usage root and gates JSON details", () => {
   const h = home(),
     root = join(h, "sessions", "root.jsonl"),
