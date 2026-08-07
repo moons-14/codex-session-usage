@@ -163,3 +163,17 @@ test("keeps a zero-usage root and gates JSON details", () => {
   expect(jsonSessions([session], true)[0].details).toHaveLength(1);
   expect(render([session])).toContain("\tTOTAL\t");
 });
+test("does not emit metadata-only trees outside ccusage selection", () => {
+  const h = home(),
+    a = join(h, "sessions", "a.jsonl"),
+    b = join(h, "sessions", "b.jsonl");
+  writeFileSync(a, meta({ session_id: "A", id: "a" }));
+  writeFileSync(b, meta({ session_id: "B", id: "b" }));
+  const scan = scanHomes([h]);
+  expect(group([], scan.metas, scan.warnings).sessions).toHaveLength(0);
+  expect(
+    group(normalizeRows([row(a)]), scan.metas, scan.warnings).sessions.map(
+      (s) => s.sessionId,
+    ),
+  ).toEqual(["A"]);
+});

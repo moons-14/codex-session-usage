@@ -59,7 +59,17 @@ const string = (o: Record<string, unknown>, ...keys: string[]) =>
 function filesAt(root: string, warnings: Warning[]): string[] {
   if (!existsSync(root)) return [];
   const result: string[] = [];
-  for (const e of readdirSync(root)) {
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    warnings.push({
+      code: "scan_error",
+      message: `Cannot read directory: ${root}`,
+    });
+    return result;
+  }
+  for (const e of entries) {
     const p = join(root, e);
     let stat;
     try {
@@ -296,7 +306,6 @@ export function group(
     if (!meta.isSubagent && meta.threadId) s.rootThreadId = meta.threadId;
     return s;
   };
-  for (const meta of metas) ensure(meta);
   for (const row of rows) {
     const meta = metas.find((m) => samePath(row, m));
     if (!meta) {
@@ -320,6 +329,12 @@ export function group(
       (row.lastActivity && row.lastActivity > s.lastActivity)
     )
       s.lastActivity = row.lastActivity;
+  }
+  // ccusage decides the date scope.  Enrich only trees it selected, so a
+  // metadata-only historical session cannot reappear after filtering.
+  for (const meta of metas) {
+    const id = tree(meta);
+    if (grouped.has(`${meta.home}:${id}`)) ensure(meta);
   }
   for (const s of grouped.values())
     s.warnings = warnings.filter((w) =>
