@@ -54,6 +54,8 @@ export type ThreadDetail = {
   unattributedCostUSD: number;
 };
 export type Session = {
+  /** Internal grouping identity; never included in public JSON. */
+  sourceIdentity?: string;
   sessionId: string;
   title: string;
   rootThreadId?: string;
@@ -407,6 +409,7 @@ export function group(
     let s = grouped.get(key);
     if (!s) {
       s = {
+        sourceIdentity: key,
         sessionId: id,
         title: "Untitled",
         rootThreadId: undefined,
@@ -754,7 +757,8 @@ function table(
   ].join("\n");
 }
 export function jsonSessions(sessions: Session[], details: boolean): Session[] {
-  return sessions.map(({ details: rows, ...session }) =>
-    details ? { ...session, details: rows } : session,
+  return sessions.map(
+    ({ details: rows, sourceIdentity: _identity, ...session }) =>
+      details ? { ...session, details: rows } : session,
   );
 }

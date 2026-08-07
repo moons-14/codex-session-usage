@@ -12,6 +12,7 @@ import {
   scanHomes,
 } from "../src/index.js";
 import {
+  dashboardSessions,
   dashboardDocument,
   parsePort,
   pidAlive,
@@ -210,11 +211,35 @@ test("serves final dashboard markup without a template transform", () => {
     "price unavailable",
     "let ranked=[...data.sessions]",
     "setAttribute('aria-label',z.title)",
-    "x.onclick=()=>open(s)",
-    "let legend=document.createElement('div')",
+    "Copy total by model",
+    "Copy total and subagents by model",
+    "navigator.clipboard?.writeText",
+    "expandedSessionKey",
+    "dashboardKey",
+    "session-toggle-",
+    "setAttribute('aria-expanded'",
+    "x.onclick=()=>toggle(s)",
+    "let legend=modelPills(s)",
   ])
     expect(document).toContain(marker);
+  expect(document).not.toContain("showModal");
+  expect(document).not.toContain("<dialog");
   expect(document).not.toContain("dashboardHtml");
+});
+test("assigns stable opaque dashboard keys to colliding session IDs", () => {
+  const input = [
+    { sessionId: "same", sourceIdentity: "/home/one:same" },
+    { sessionId: "same", sourceIdentity: "/home/two:same" },
+  ] as never;
+  const forward = dashboardSessions(input);
+  const reversed = dashboardSessions([...input].reverse());
+  expect(forward.map((session) => session.dashboardKey)).toHaveLength(2);
+  expect(forward[0].dashboardKey).not.toBe(forward[1].dashboardKey);
+  expect(forward.map((session) => session.dashboardKey).sort()).toEqual(
+    reversed.map((session) => session.dashboardKey).sort(),
+  );
+  expect(JSON.stringify(forward)).not.toContain("/home/one");
+  expect(forward[0].dashboardKey).toMatch(/^[a-f0-9]+$/);
 });
 test("dashboard PID liveness does not treat this process as stale", () => {
   expect(pidAlive(process.pid)).toBe(true);
@@ -345,6 +370,8 @@ test("keeps a zero-usage root and gates JSON details", () => {
     session = group(normalizeRows([row(child)]), scan.metas, scan.warnings)
       .sessions[0];
   expect(session.rootThreadId).toBe("root");
+  expect(session.sourceIdentity).toContain(h);
+  expect(JSON.stringify(jsonSessions([session], true))).not.toContain(h);
   expect(jsonSessions([session], false)[0].details).toBeUndefined();
   expect(jsonSessions([session], true)[0].details).toHaveLength(2);
   const displayed = render([

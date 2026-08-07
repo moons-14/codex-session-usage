@@ -39,8 +39,8 @@ running dashboard on the same port, and refuses to replace one on a different
 port. The server is bound exclusively to `127.0.0.1`, serves no prompts or raw
 rollout contents, and refreshes a shared offline `ccusage` snapshot about every
 four seconds. The page includes totals, model/session token bars, search and
-sorting, and an accessible per-session detail dialog for the root and its
-subagents.
+sorting, inline per-session expansion for the root and its subagents, and
+copy controls for per-model totals or totals plus subagents.
 
 The page uses ccusage's API-equivalent estimate, not a ChatGPT subscription
 charge or quota. A rollout containing exactly one model gets an exact model
