@@ -8,10 +8,10 @@ import {
 } from "./index.js";
 import {
   parsePort,
-  serveDashboard,
   startDashboard,
   stopDashboard,
 } from "./dashboard.js";
+import { serveDashboardUi } from "./dashboard-ui-server.js";
 const args = process.argv.slice(2);
 const command = args[0];
 if (command === "start" || command === "stop" || command === "__serve") {
@@ -41,7 +41,7 @@ if (command === "start" || command === "stop" || command === "__serve") {
       const tokenIndex = args.indexOf("--token");
       const token = tokenIndex >= 0 ? args[tokenIndex + 1] : undefined;
       if (!token) throw new Error("internal server requires --token");
-      await serveDashboard(port, token);
+      await serveDashboardUi(port, token);
     }
   } catch (e) {
     console.error(e instanceof Error ? e.message : e);
