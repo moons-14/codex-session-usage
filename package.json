@@ -1,0 +1,22 @@
+{
+  "name": "codex-session-usage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "codex-session-usage": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit",
+    "lint": "bunx tsc --noEmit",
+    "format": "bunx prettier --write .",
+    "format:check": "bunx prettier --check ."
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "prettier": "latest",
+    "typescript": "latest"
+  }
+}
