@@ -43,7 +43,7 @@ const row = (file: string, model = "gpt", total = 10) => ({
 const state = (
   h: string,
   threads: { id: string; title: string }[],
-  childIds: string[] = [],
+  childEdges: { id: string; status: string }[] = [],
 ) => {
   const db = new Database(join(h, "state_5.sqlite"));
   db.run("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL)");
@@ -55,9 +55,9 @@ const state = (
   );
   for (const thread of threads) insertThread.run(thread.id, thread.title);
   const insertEdge = db.query(
-    "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES ('root', ?, 'completed')",
+    "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES ('root', ?, ?)",
   );
-  for (const childId of childIds) insertEdge.run(childId);
+  for (const child of childEdges) insertEdge.run(child.id, child.status);
   db.close();
 };
 test("groups explicit session IDs, nested subagents, and model totals", () => {
@@ -340,22 +340,47 @@ test("uses root SQLite titles when the session index is stale or missing", () =>
       .sessions[0].title,
   ).toBe("SQLite only");
 });
-test("excludes SQLite child titles regardless of edge status and falls back to the index", () => {
+test("does not use stale session-index titles when a valid SQLite database has no root title", () => {
+  const h = home(),
+    file = join(h, "sessions", "root.jsonl");
+  writeFileSync(file, meta({ session_id: "S", id: "root" }));
+  state(h, []);
+  writeFileSync(
+    join(h, "session_index.jsonl"),
+    JSON.stringify({ id: "S", thread_name: "stale index title" }),
+  );
+  const scan = scanHomes([h]);
+  expect(
+    group(normalizeRows([row(file)]), scan.metas, scan.warnings).sessions[0]
+      .title,
+  ).toBe("Untitled");
+  expect(scan.warnings).toEqual([]);
+});
+test("excludes SQLite child titles regardless of edge status without using the index", () => {
   const h = home(),
     root = join(h, "sessions", "root.jsonl"),
-    child = join(h, "sessions", "child.jsonl");
+    child = join(h, "sessions", "child.jsonl"),
+    childTwo = join(h, "sessions", "child-two.jsonl");
   writeFileSync(root, meta({ session_id: "S", id: "root" }));
   writeFileSync(
     child,
     meta({ session_id: "S", id: "child", parent_thread_id: "root" }),
+  );
+  writeFileSync(
+    childTwo,
+    meta({ session_id: "S", id: "child-two", parent_thread_id: "root" }),
   );
   state(
     h,
     [
       { id: "root", title: "Root SQLite" },
       { id: "child", title: "Child SQLite" },
+      { id: "child-two", title: "Second child SQLite" },
     ],
-    ["child"],
+    [
+      { id: "child", status: "running" },
+      { id: "child-two", status: "failed" },
+    ],
   );
   writeFileSync(
     join(h, "session_index.jsonl"),
@@ -363,14 +388,17 @@ test("excludes SQLite child titles regardless of edge status and falls back to t
   );
   const scan = scanHomes([h]);
   const output = group(
-    normalizeRows([row(root), row(child)]),
+    normalizeRows([row(root), row(child), row(childTwo)]),
     scan.metas,
     scan.warnings,
   );
   expect(output.sessions[0].title).toBe("Root SQLite");
   expect(scan.metas.find((entry) => entry.threadId === "child")?.title).toBe(
-    "Index root",
+    undefined,
   );
+  expect(
+    scan.metas.find((entry) => entry.threadId === "child-two")?.title,
+  ).toBe(undefined);
 });
 test("keeps SQLite title lookup isolated by home when thread IDs collide", () => {
   const one = home(),

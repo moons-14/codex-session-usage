@@ -136,7 +136,7 @@ function metadata(
   file: string,
   sessionRoot: string,
   active: boolean,
-  stateTitles: Map<string, string>,
+  state: { available: boolean; titles: Map<string, string> },
   indexTitles: Map<string, string>,
   warnings: Warning[],
 ): Meta | undefined {
@@ -180,14 +180,16 @@ function metadata(
             payload.parent_thread_id || payload.parentThreadId || spawn,
           ),
           lastActivity: string(payload, "last_activity", "lastActivity"),
-          title:
-            stateTitles.get(
-              string(payload, "id", "thread_id", "threadId") ?? "",
-            ) ??
-            indexTitles.get(string(payload, "session_id", "sessionId") ?? "") ??
-            indexTitles.get(
-              string(payload, "id", "thread_id", "threadId") ?? "",
-            ),
+          title: state.available
+            ? state.titles.get(
+                string(payload, "id", "thread_id", "threadId") ?? "",
+              )
+            : indexTitles.get(
+                  string(payload, "session_id", "sessionId") ?? "",
+                ) ??
+              indexTitles.get(
+                string(payload, "id", "thread_id", "threadId") ?? "",
+              ),
           agentNickname:
             string(payload, "agent_nickname", "agentNickname") ??
             (spawn && string(spawn, "agent_nickname", "agentNickname")),
@@ -246,10 +248,14 @@ function sessionTitles(home: string, warnings: Warning[]): Map<string, string> {
   }
   return titles;
 }
-function stateTitles(home: string, warnings: Warning[]): Map<string, string> {
+function stateTitles(
+  home: string,
+  warnings: Warning[],
+): { available: boolean; titles: Map<string, string> } {
   const titles = new Map<string, string>();
   const file = join(home, "state_5.sqlite");
-  let database: Database | undefined;
+  let database: Database | undefined,
+    available = false;
   try {
     database = new Database(file, { readonly: true, create: false });
     for (const row of database
@@ -260,6 +266,7 @@ function stateTitles(home: string, warnings: Warning[]): Map<string, string> {
       if (typeof row.id === "string" && typeof row.title === "string")
         titles.set(row.id, row.title);
     }
+    available = true;
   } catch {
     warnings.push({
       code: "unreadable_state_database",
@@ -268,7 +275,7 @@ function stateTitles(home: string, warnings: Warning[]): Map<string, string> {
   } finally {
     database?.close();
   }
-  return titles;
+  return { available, titles };
 }
 export function scanHomes(homes: string[]): {
   metas: Meta[];
