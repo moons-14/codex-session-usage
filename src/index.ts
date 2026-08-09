@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { Database } from "bun:sqlite";
 
 export type Tokens = Record<
   | "inputTokens"
@@ -135,7 +136,8 @@ function metadata(
   file: string,
   sessionRoot: string,
   active: boolean,
-  titles: Map<string, string>,
+  state: { available: boolean; titles: Map<string, string> },
+  indexTitles: Map<string, string>,
   warnings: Warning[],
 ): Meta | undefined {
   try {
@@ -178,9 +180,16 @@ function metadata(
             payload.parent_thread_id || payload.parentThreadId || spawn,
           ),
           lastActivity: string(payload, "last_activity", "lastActivity"),
-          title:
-            titles.get(string(payload, "session_id", "sessionId") ?? "") ??
-            titles.get(string(payload, "id", "thread_id", "threadId") ?? ""),
+          title: state.available
+            ? state.titles.get(
+                string(payload, "id", "thread_id", "threadId") ?? "",
+              )
+            : (indexTitles.get(
+                string(payload, "session_id", "sessionId") ?? "",
+              ) ??
+              indexTitles.get(
+                string(payload, "id", "thread_id", "threadId") ?? "",
+              )),
           agentNickname:
             string(payload, "agent_nickname", "agentNickname") ??
             (spawn && string(spawn, "agent_nickname", "agentNickname")),
@@ -239,6 +248,35 @@ function sessionTitles(home: string, warnings: Warning[]): Map<string, string> {
   }
   return titles;
 }
+function stateTitles(
+  home: string,
+  warnings: Warning[],
+): { available: boolean; titles: Map<string, string> } {
+  const titles = new Map<string, string>();
+  const file = join(home, "state_5.sqlite");
+  let database: Database | undefined,
+    available = false;
+  try {
+    database = new Database(file, { readonly: true, create: false });
+    for (const row of database
+      .query(
+        "SELECT t.id, t.title FROM threads AS t WHERE NOT EXISTS (SELECT 1 FROM thread_spawn_edges AS e WHERE e.child_thread_id = t.id)",
+      )
+      .all() as { id: unknown; title: unknown }[]) {
+      if (typeof row.id === "string" && typeof row.title === "string")
+        titles.set(row.id, row.title);
+    }
+    available = true;
+  } catch {
+    warnings.push({
+      code: "unreadable_state_database",
+      message: `Cannot read state database: ${file}`,
+    });
+  } finally {
+    database?.close();
+  }
+  return { available, titles };
+}
 export function scanHomes(homes: string[]): {
   metas: Meta[];
   warnings: Warning[];
@@ -247,7 +285,8 @@ export function scanHomes(homes: string[]): {
     metas: Meta[] = [];
   for (const raw of homes) {
     const home = resolve(raw);
-    const titles = sessionTitles(home, warnings);
+    const sqliteTitles = stateTitles(home, warnings);
+    const indexTitles = sessionTitles(home, warnings);
     const byPath = new Map<string, Meta>();
     for (const [dir, active] of [
       ["archived_sessions", false],
@@ -259,7 +298,8 @@ export function scanHomes(homes: string[]): {
           file,
           join(home, dir),
           active,
-          titles,
+          sqliteTitles,
+          indexTitles,
           warnings,
         );
         if (!m) continue;

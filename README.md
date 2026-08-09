@@ -15,7 +15,7 @@ bun run start -- --session <session-id> --details
 
 Options: `--json`, `--session ID`, `--since ISO-8601`, `--until ISO-8601`, and `--details`.
 
-Human output is one compact bordered table per root session: its sanitized header shows the root title from `$CODEX_HOME/session_index.jsonl`, a shortened session ID, and the session-level estimated cost. The title index is optional; its last valid record for an ID wins, and missing titles display as `Untitled`. The table responds to terminal width by omitting lower-priority `CACHE` and then `REASONING` columns when necessary; `--details` adapts the same way. `--json` retains the full, unsanitized title and ID and adds `title` and `costUSD`.
+Human output is one compact bordered table per root session: its sanitized header shows the root title from `$CODEX_HOME/state_5.sqlite`, a shortened session ID, and the session-level estimated cost. The database is opened read-only and only root-thread IDs and titles are read; child threads are excluded. If it is unavailable or incompatible, `$CODEX_HOME/session_index.jsonl` remains the optional backward-compatible fallback: its last valid record for an ID wins, and missing titles display as `Untitled`. The table responds to terminal width by omitting lower-priority `CACHE` and then `REASONING` columns when necessary; `--details` adapts the same way. `--json` retains the full, unsanitized title and ID and adds `title` and `costUSD`.
 
 The cost is ccusage/LiteLLM's API-equivalent USD estimate. It is not a ChatGPT subscription charge, quota, or invoice. ccusage's Codex adapter v20.0.19 exposes a cost only for an entire rollout, not for its individual models, so prices appear in the session header and overall summary rather than being invented for model rows.
 
