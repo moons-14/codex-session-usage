@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Database } from "bun:sqlite";
 import {
   assertCcusageVersion,
   ccusageArgs,
@@ -39,6 +40,26 @@ const row = (file: string, model = "gpt", total = 10) => ({
   },
   lastActivity: "2026-08-07T12:00:00Z",
 });
+const state = (
+  h: string,
+  threads: { id: string; title: string }[],
+  childIds: string[] = [],
+) => {
+  const db = new Database(join(h, "state_5.sqlite"));
+  db.run("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL)");
+  db.run(
+    "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL)",
+  );
+  const insertThread = db.query(
+    "INSERT INTO threads (id, title) VALUES (?, ?)",
+  );
+  for (const thread of threads) insertThread.run(thread.id, thread.title);
+  const insertEdge = db.query(
+    "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES ('root', ?, 'completed')",
+  );
+  for (const childId of childIds) insertEdge.run(childId);
+  db.close();
+};
 test("groups explicit session IDs, nested subagents, and model totals", () => {
   const h = home(),
     a = join(h, "sessions", "a.jsonl"),
@@ -292,6 +313,105 @@ test("uses the last valid root title from session_index and ignores child titles
   expect(session.title).toBe("日本語の最終タイトル");
   expect(output.warnings.map((warning) => warning.code)).toContain(
     "malformed_session_index",
+  );
+});
+test("uses root SQLite titles when the session index is stale or missing", () => {
+  const h = home(),
+    file = join(h, "sessions", "root.jsonl");
+  writeFileSync(file, meta({ session_id: "S", id: "root" }));
+  state(h, [{ id: "root", title: "SQLite title" }]);
+  writeFileSync(
+    join(h, "session_index.jsonl"),
+    JSON.stringify({ id: "S", thread_name: "stale" }),
+  );
+  const staleScan = scanHomes([h]);
+  expect(
+    group(normalizeRows([row(file)]), staleScan.metas, staleScan.warnings)
+      .sessions[0].title,
+  ).toBe("SQLite title");
+
+  const withoutIndex = home(),
+    missingIndexFile = join(withoutIndex, "sessions", "root.jsonl");
+  writeFileSync(missingIndexFile, meta({ session_id: "S", id: "root" }));
+  state(withoutIndex, [{ id: "root", title: "SQLite only" }]);
+  const scan = scanHomes([withoutIndex]);
+  expect(
+    group(normalizeRows([row(missingIndexFile)]), scan.metas, scan.warnings)
+      .sessions[0].title,
+  ).toBe("SQLite only");
+});
+test("excludes SQLite child titles regardless of edge status and falls back to the index", () => {
+  const h = home(),
+    root = join(h, "sessions", "root.jsonl"),
+    child = join(h, "sessions", "child.jsonl");
+  writeFileSync(root, meta({ session_id: "S", id: "root" }));
+  writeFileSync(
+    child,
+    meta({ session_id: "S", id: "child", parent_thread_id: "root" }),
+  );
+  state(
+    h,
+    [
+      { id: "root", title: "Root SQLite" },
+      { id: "child", title: "Child SQLite" },
+    ],
+    ["child"],
+  );
+  writeFileSync(
+    join(h, "session_index.jsonl"),
+    JSON.stringify({ id: "S", thread_name: "Index root" }),
+  );
+  const scan = scanHomes([h]);
+  const output = group(
+    normalizeRows([row(root), row(child)]),
+    scan.metas,
+    scan.warnings,
+  );
+  expect(output.sessions[0].title).toBe("Root SQLite");
+  expect(scan.metas.find((entry) => entry.threadId === "child")?.title).toBe(
+    "Index root",
+  );
+});
+test("keeps SQLite title lookup isolated by home when thread IDs collide", () => {
+  const one = home(),
+    two = home(),
+    a = join(one, "sessions", "a.jsonl"),
+    b = join(two, "sessions", "b.jsonl");
+  writeFileSync(a, meta({ session_id: "same", id: "root" }));
+  writeFileSync(b, meta({ session_id: "same", id: "root" }));
+  state(one, [{ id: "root", title: "One" }]);
+  state(two, [{ id: "root", title: "Two" }]);
+  const scan = scanHomes([one, two]);
+  expect(
+    group(normalizeRows([row(a), row(b)]), scan.metas, scan.warnings)
+      .sessions.map((session) => session.title)
+      .sort(),
+  ).toEqual(["One", "Two"]);
+});
+test("falls back to the session index when the SQLite database is missing or incompatible", () => {
+  const h = home(),
+    file = join(h, "sessions", "root.jsonl");
+  writeFileSync(file, meta({ session_id: "S", id: "root" }));
+  writeFileSync(
+    join(h, "session_index.jsonl"),
+    JSON.stringify({ id: "S", thread_name: "Index title" }),
+  );
+  let scan = scanHomes([h]);
+  expect(
+    group(normalizeRows([row(file)]), scan.metas, scan.warnings).sessions[0]
+      .title,
+  ).toBe("Index title");
+  expect(scan.warnings.map((warning) => warning.code)).toContain(
+    "unreadable_state_database",
+  );
+  writeFileSync(join(h, "state_5.sqlite"), "not a SQLite database");
+  scan = scanHomes([h]);
+  expect(
+    group(normalizeRows([row(file)]), scan.metas, scan.warnings).sessions[0]
+      .title,
+  ).toBe("Index title");
+  expect(scan.warnings.map((warning) => warning.code)).toContain(
+    "unreadable_state_database",
   );
 });
 test("matches ccusage relative directory and extensionless sessionFile", () => {
