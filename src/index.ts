@@ -184,12 +184,12 @@ function metadata(
             ? state.titles.get(
                 string(payload, "id", "thread_id", "threadId") ?? "",
               )
-            : indexTitles.get(
-                  string(payload, "session_id", "sessionId") ?? "",
-                ) ??
+            : (indexTitles.get(
+                string(payload, "session_id", "sessionId") ?? "",
+              ) ??
               indexTitles.get(
                 string(payload, "id", "thread_id", "threadId") ?? "",
-              ),
+              )),
           agentNickname:
             string(payload, "agent_nickname", "agentNickname") ??
             (spawn && string(spawn, "agent_nickname", "agentNickname")),
